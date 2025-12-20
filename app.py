@@ -3,160 +3,117 @@ import pandas as pd
 import random
 import time
 from collections import Counter
-from io import BytesIO
-import matplotlib.pyplot as plt
 
-# -------------------------------
-# PAGE CONFIG
-# -------------------------------
-st.set_page_config(page_title="Lottery Optimizer", layout="wide")
-st.title("🎯 Lottery Lowest Payout Optimizer")
-
-# -------------------------------
-# LOGIN
-# -------------------------------
-ADMIN_PASSWORD = "admin123"
-
-pwd = st.sidebar.text_input("🔐 Admin Password", type="password")
-if pwd != ADMIN_PASSWORD:
-    st.warning("Enter admin password")
-    st.stop()
-
-# -------------------------------
-# SETTINGS
-# -------------------------------
-TIME_LIMIT = st.sidebar.slider("Time Limit (sec)", 30, 300, 120)
-MAX_RESULTS = st.sidebar.slider("Max Results", 5, 30, 15)
-
-PAYOUT = [0, 0, 0, 15, 400, 1850, 50000]
+# =============================
+# CONFIG
+# =============================
+COMBO_SIZE = 6
 NUMBERS = list(range(1, 26))
+MAX_ITERATIONS = 800000
+TIME_LIMIT = 240    # seconds
+MAX_RESULTS = 20
 
-# -------------------------------
-# FILE UPLOAD
-# -------------------------------
-file = st.file_uploader("📂 Upload Excel file (Column A: 6 numbers comma-separated)", type=["xlsx"])
-if not file:
-    st.stop()
+# =============================
+# PAYOUT RULES
+# =============================
+PAYOUT = [0, 0, 0, 15, 400, 1850, 50000]
 
-df = pd.read_excel(file)
+st.title("🎯 LOWEST TOTAL PAYOUT OPTIMIZER (6 numbers, 1–25)")
 
-# -------------------------------
-# LOAD TICKETS
-# -------------------------------
-tickets = []
-freq = Counter()
+uploaded = st.file_uploader("Upload Excel with tickets", type=["xlsx"])
 
-for v in df.iloc[:, 0]:
-    try:
-        nums = list(map(int, str(v).split(",")))
-        if len(nums) == 6 and len(set(nums)) == 6:
-            tickets.append(set(nums))
-            for n in nums:
-                freq[n] += 1
-    except:
-        pass
+if uploaded:
 
-if not tickets:
-    st.error("No valid tickets found")
-    st.stop()
+    df = pd.read_excel(uploaded)
+    st.success("File loaded successfully")
 
-st.success(f"🎟️ Tickets Loaded: {len(tickets)}")
+    tickets_bits = []
+    freq = Counter()
 
-# -------------------------------
-# STATS
-# -------------------------------
-st.subheader("📊 Number Frequency")
-freq_df = pd.DataFrame(
-    {"Number": NUMBERS, "Frequency": [freq[n] for n in NUMBERS]}
-)
-st.bar_chart(freq_df.set_index("Number"))
+    for val in df.iloc[:, 0]:
+        if isinstance(val, str):
+            try:
+                nums = [int(x.strip()) for x in val.split(",")]
+                if len(set(nums)) == 6:
+                    mask = 0
+                    for n in nums:
+                        mask |= 1 << (n - 1)
+                        freq[n] += 1
+                    tickets_bits.append(mask)
+            except:
+                continue
 
-# -------------------------------
-# EVALUATION
-# -------------------------------
-def evaluate(combo, cutoff):
-    total = 0
-    count4 = 0
+    st.write(f"🎟️ Tickets Loaded:", len(tickets_bits))
 
-    for t in tickets:
-        m = len(combo & t)
+    numbers_weighted = sorted(NUMBERS, key=lambda x: freq[x])
 
-        if m >= 5:
-            return None
+    best_results = []
+    seen = set()
 
-        if m == 4:
-            count4 += 1
-            if count4 > 10:
+    def worst_payout():
+        return best_results[-1][0] if best_results else float("inf")
+
+    def evaluate(mask):
+        total = 0
+        count_4 = 0
+
+        for t in tickets_bits:
+            m = (mask & t).bit_count()
+
+            if m == 4:
+                count_4 += 1
+                if count_4 > 10:
+                    return None
+
+            total += PAYOUT[m]
+
+            if total > worst_payout():
                 return None
 
-        total += PAYOUT[m]
-        if total > cutoff:
+        if count_4 != 10:
             return None
 
-    if count4 != 10:
-        return None
+        return total
 
-    return total
-
-# -------------------------------
-# RUN OPTIMIZER
-# -------------------------------
-if st.button("🚀 Run Optimizer"):
     start = time.time()
-    best = []
 
-    cold = sorted(NUMBERS, key=lambda x: freq[x])
+    progress_bar = st.progress(0)
+    status = st.empty()
 
-    progress = st.progress(0.0)
+    for i in range(MAX_ITERATIONS):
 
-    while time.time() - start < TIME_LIMIT:
-        combo = set(random.sample(cold[:15], 6))
-        cutoff = best[-1][0] if len(best) == MAX_RESULTS else float("inf")
+        # TIME CHECK
+        if time.time() - start > TIME_LIMIT:
+            break
 
-        score = evaluate(combo, cutoff)
+        combo = random.sample(numbers_weighted[:15], 4) + random.sample(numbers_weighted[15:], 2)
+
+        mask = 0
+        for n in combo:
+            mask |= 1 << (n - 1)
+
+        if mask in seen:
+            continue
+
+        seen.add(mask)
+
+        score = evaluate(mask)
         if score is None:
             continue
 
-        best.append((score, combo))
-        best = sorted(best)[:MAX_RESULTS]
+        best_results.append((score, mask))
+        best_results = sorted(best_results)[:MAX_RESULTS]
 
-        progress.progress(min((time.time() - start) / TIME_LIMIT, 1.0))
+        nums = [i + 1 for i in range(25) if mask & (1 << i)]
 
-    # -------------------------------
-    # RESULTS
-    # -------------------------------
-    st.subheader("🏆 Lowest Payout Results")
+        status.write(f"🔥 FOUND → {nums} | ₹{score}")
 
-    results = []
-    payouts = []
+        progress_bar.progress(i / MAX_ITERATIONS)
 
-    for score, combo in best:
-        results.append({"Numbers": sorted(combo), "Payout": score})
-        payouts.append(score)
+    st.subheader("🏆 TOP 20 LOWEST TOTAL PAYOUT RESULTS")
 
-    res_df = pd.DataFrame(results)
-    st.dataframe(res_df)
+    for i, (score, mask) in enumerate(best_results, 1):
+        nums = [i + 1 for i in range(25) if mask & (1 << i)]
+        st.write(f"{i:02d}. {nums} → ₹{score}")
 
-    # -------------------------------
-    # CHART
-    # -------------------------------
-    fig, ax = plt.subplots()
-    ax.plot(sorted(payouts))
-    ax.set_ylabel("Payout")
-    ax.set_xlabel("Rank")
-    st.pyplot(fig)
-
-    # -------------------------------
-    # EXPORT
-    # -------------------------------
-    buffer = BytesIO()
-    res_df.to_excel(buffer, index=False)
-    buffer.seek(0)
-
-    st.download_button(
-        "⬇ Download Excel",
-        buffer,
-        "lowest_payout_results.xlsx"
-    )
-
-    st.success("✅ Done")
+    st.success("✔ DONE")
